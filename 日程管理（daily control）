@@ -1,0 +1,397 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+from datetime import datetime, timedelta
+import sqlite3
+import logging
+import threading
+import psutil
+import sys
+
+# 数据库文件路径
+DB_FILE = 'schedule_manager.db'
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filename="schedule_manager.log"
+)
+
+# 全局异常处理
+def handle_exception(exc_type, exc_value, exc_traceback):
+    logging.error("未捕获的异常:", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = handle_exception
+
+# 数据存储模块
+def init_db():
+    """初始化数据库，创建必要的表"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS tasks
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      title TEXT NOT NULL,
+                      description TEXT,
+                      due_date DATE NOT NULL,
+                      priority TEXT NOT NULL,
+                      status TEXT NOT NULL DEFAULT '未完成')''')
+        conn.commit()
+    except Exception as e:
+        logging.error(f"数据库初始化失败：{e}")
+    finally:
+        if conn:
+            conn.close()
+
+def add_task(title, description, due_date, priority):
+    """添加一个新的日程事项"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''INSERT INTO tasks (title, description, due_date, priority)
+                     VALUES (?, ?, ?, ?)''', (title, description, due_date, priority))
+        conn.commit()
+        logging.info(f"任务添加成功：{title}")
+    except Exception as e:
+        logging.error(f"任务添加失败：{e}")
+    finally:
+        if conn:
+            conn.close()
+
+def delete_task(task_id):
+    """根据ID删除一个日程事项"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
+        conn.commit()
+        logging.info(f"任务删除成功：{task_id}")
+    except Exception as e:
+        logging.error(f"任务删除失败：{e}")
+    finally:
+        if conn:
+            conn.close()
+
+def update_task(task_id, title=None, description=None, due_date=None, priority=None, status=None):
+    """更新一个日程事项的信息"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        if title:
+            c.execute('UPDATE tasks SET title = ? WHERE id = ?', (title, task_id))
+        if description:
+            c.execute('UPDATE tasks SET description = ? WHERE id = ?', (description, task_id))
+        if due_date:
+            c.execute('UPDATE tasks SET due_date = ? WHERE id = ?', (due_date, task_id))
+        if priority:
+            c.execute('UPDATE tasks SET priority = ? WHERE id = ?', (priority, task_id))
+        if status:
+            c.execute('UPDATE tasks SET status = ? WHERE id = ?', (status, task_id))
+        conn.commit()
+        logging.info(f"任务更新成功：{task_id}")
+    except Exception as e:
+        logging.error(f"任务更新失败：{e}")
+    finally:
+        if conn:
+            conn.close()
+
+def get_all_tasks():
+    """获取所有日程事项"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT * FROM tasks')
+        tasks = c.fetchall()
+        return tasks
+    except Exception as e:
+        logging.error(f"获取任务失败：{e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def get_task_by_id(task_id):
+    """根据ID获取一个日程事项"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
+        task = c.fetchone()
+        return task
+    except Exception as e:
+        logging.error(f"获取任务失败：{e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+# 初始化数据库
+init_db()
+
+# 前端界面模块
+class ScheduleManagerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("日程管理程序")
+        self.root.geometry("800x600")
+
+        # 初始化界面
+        self.init_ui()
+
+        # 加载所有任务
+        self.load_tasks()
+
+        # 启动提醒检查
+        self.check_reminders()
+
+        # 启动内存监控
+        self.monitor_memory()
+
+        # 绑定窗口关闭事件
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def init_ui(self):
+        """初始化用户界面"""
+        # 输入区域
+        input_frame = ttk.LabelFrame(self.root, text="添加/编辑任务")
+        input_frame.pack(fill="x", padx=10, pady=10)
+
+        ttk.Label(input_frame, text="标题:").grid(row=0, column=0, padx=5, pady=5)
+        self.title_entry = ttk.Entry(input_frame, width=50)
+        self.title_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        ttk.Label(input_frame, text="描述:").grid(row=1, column=0, padx=5, pady=5)
+        self.description_entry = ttk.Entry(input_frame, width=50)
+        self.description_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        ttk.Label(input_frame, text="截止日期 (YYYY-MM-DD):").grid(row=2, column=0, padx=5, pady=5)
+        self.due_date_entry = ttk.Entry(input_frame, width=20)
+        self.due_date_entry.grid(row=2, column=1, padx=5, pady=5)
+
+        ttk.Label(input_frame, text="优先级:").grid(row=3, column=0, padx=5, pady=5)
+        self.priority_combobox = ttk.Combobox(input_frame, values=["重要且紧急", "重要不紧急", "不重要紧急", "不重要不紧急"])
+        self.priority_combobox.grid(row=3, column=1, padx=5, pady=5)
+        self.priority_combobox.current(0)
+
+        ttk.Button(input_frame, text="添加任务", command=self.add_task).grid(row=4, column=0, padx=5, pady=5)
+        ttk.Button(input_frame, text="更新任务", command=self.update_task).grid(row=4, column=1, padx=5, pady=5)
+
+        # 搜索和排序区域
+        filter_frame = ttk.LabelFrame(self.root, text="搜索和排序")
+        filter_frame.pack(fill="x", padx=10, pady=10)
+
+        ttk.Label(filter_frame, text="搜索标题:").grid(row=0, column=0, padx=5, pady=5)
+        self.search_entry = ttk.Entry(filter_frame, width=30)
+        self.search_entry.grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(filter_frame, text="搜索", command=self.search_tasks).grid(row=0, column=2, padx=5, pady=5)
+
+        ttk.Label(filter_frame, text="排序方式:").grid(row=1, column=0, padx=5, pady=5)
+        self.sort_combobox = ttk.Combobox(filter_frame, values=["截止日期", "优先级", "状态"])
+        self.sort_combobox.grid(row=1, column=1, padx=5, pady=5)
+        self.sort_combobox.current(0)
+        ttk.Button(filter_frame, text="排序", command=self.sort_tasks).grid(row=1, column=2, padx=5, pady=5)
+
+        # 任务列表区域
+        task_frame = ttk.Frame(self.root)
+        task_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # 未完成任务区域
+        incomplete_frame = ttk.LabelFrame(task_frame, text="未完成任务")
+        incomplete_frame.pack(fill="both", expand=True, side="top", padx=5, pady=5)
+
+        self.incomplete_tree = ttk.Treeview(incomplete_frame, columns=("ID", "Title", "Description", "Due Date", "Priority", "Status"), show="headings")
+        self.incomplete_tree.heading("ID", text="ID")
+        self.incomplete_tree.heading("Title", text="标题")
+        self.incomplete_tree.heading("Description", text="描述")
+        self.incomplete_tree.heading("Due Date", text="截止日期")
+        self.incomplete_tree.heading("Priority", text="优先级")
+        self.incomplete_tree.heading("Status", text="状态")
+        self.incomplete_tree.pack(fill="both", expand=True)
+
+        ttk.Button(incomplete_frame, text="删除任务", command=self.delete_task).pack(side="left", padx=5, pady=5)
+        ttk.Button(incomplete_frame, text="标记为完成", command=self.mark_as_done).pack(side="left", padx=5, pady=5)
+
+        # 已完成任务区域
+        complete_frame = ttk.LabelFrame(task_frame, text="已完成任务")
+        complete_frame.pack(fill="both", expand=True, side="bottom", padx=5, pady=5)
+
+        self.complete_tree = ttk.Treeview(complete_frame, columns=("ID", "Title", "Description", "Due Date", "Priority", "Status"), show="headings")
+        self.complete_tree.heading("ID", text="ID")
+        self.complete_tree.heading("Title", text="标题")
+        self.complete_tree.heading("Description", text="描述")
+        self.complete_tree.heading("Due Date", text="截止日期")
+        self.complete_tree.heading("Priority", text="优先级")
+        self.complete_tree.heading("Status", text="状态")
+        self.complete_tree.pack(fill="both", expand=True)
+
+        ttk.Button(complete_frame, text="删除任务", command=self.delete_task).pack(side="left", padx=5, pady=5)
+
+    def load_tasks(self):
+        """加载所有任务到任务列表"""
+        for row in self.incomplete_tree.get_children():
+            self.incomplete_tree.delete(row)
+        for row in self.complete_tree.get_children():
+            self.complete_tree.delete(row)
+
+        tasks = get_all_tasks()
+        for task in tasks:
+            if task[5] == "未完成":
+                self.incomplete_tree.insert("", "end", values=task)
+            else:
+                self.complete_tree.insert("", "end", values=task)
+
+    def add_task(self):
+        """添加新任务"""
+        title = self.title_entry.get()
+        description = self.description_entry.get()
+        due_date = self.due_date_entry.get()
+        priority = self.priority_combobox.get()
+
+        if not title or not due_date:
+            messagebox.showwarning("输入错误", "标题和截止日期不能为空")
+            return
+
+        try:
+            datetime.strptime(due_date, "%Y-%m-%d")
+        except ValueError:
+            messagebox.showwarning("输入错误", "截止日期格式不正确，应为YYYY-MM-DD")
+            return
+
+        add_task(title, description, due_date, priority)
+        self.load_tasks()
+        self.clear_inputs()
+
+    def update_task(self):
+        """更新选中的任务"""
+        selected_item = self.incomplete_tree.selection()
+        if not selected_item:
+            messagebox.showwarning("选择错误", "请先选择一个任务")
+            return
+
+        task_id = self.incomplete_tree.item(selected_item, "values")[0]
+        title = self.title_entry.get()
+        description = self.description_entry.get()
+        due_date = self.due_date_entry.get()
+        priority = self.priority_combobox.get()
+
+        if not title or not due_date:
+            messagebox.showwarning("输入错误", "标题和截止日期不能为空")
+            return
+
+        try:
+            datetime.strptime(due_date, "%Y-%m-%d")
+        except ValueError:
+            messagebox.showwarning("输入错误", "截止日期格式不正确，应为YYYY-MM-DD")
+            return
+
+        update_task(task_id, title, description, due_date, priority)
+        self.load_tasks()
+        self.clear_inputs()
+
+    def delete_task(self):
+        """删除选中的任务"""
+        selected_item = self.incomplete_tree.selection() or self.complete_tree.selection()
+        if not selected_item:
+            messagebox.showwarning("选择错误", "请先选择一个任务")
+            return
+
+        task_id = (self.incomplete_tree.item(selected_item, "values") or self.complete_tree.item(selected_item, "values"))[0]
+        delete_task(task_id)
+        self.load_tasks()
+
+    def mark_as_done(self):
+        """将选中的任务标记为完成"""
+        selected_item = self.incomplete_tree.selection()
+        if not selected_item:
+            messagebox.showwarning("选择错误", "请先选择一个任务")
+            return
+
+        task_id = self.incomplete_tree.item(selected_item, "values")[0]
+        update_task(task_id, status="已完成")
+        self.load_tasks()
+
+    def search_tasks(self):
+        """根据标题搜索任务"""
+        search_term = self.search_entry.get().strip()
+        if not search_term:
+            self.load_tasks()
+            return
+
+        for row in self.incomplete_tree.get_children():
+            self.incomplete_tree.delete(row)
+        for row in self.complete_tree.get_children():
+            self.complete_tree.delete(row)
+
+        tasks = get_all_tasks()
+        for task in tasks:
+            if search_term.lower() in task[1].lower():
+                if task[5] == "未完成":
+                    self.incomplete_tree.insert("", "end", values=task)
+                else:
+                    self.complete_tree.insert("", "end", values=task)
+
+    def sort_tasks(self):
+        """根据选择的排序方式对任务进行排序"""
+        sort_by = self.sort_combobox.get()
+        tasks = get_all_tasks()
+
+        if sort_by == "截止日期":
+            tasks.sort(key=lambda x: datetime.strptime(x[3], "%Y-%m-%d"))
+        elif sort_by == "优先级":
+            priority_order = {"重要且紧急": 0, "重要不紧急": 1, "不重要紧急": 2, "不重要不紧急": 3}
+            tasks.sort(key=lambda x: priority_order[x[4]])
+        elif sort_by == "状态":
+            tasks.sort(key=lambda x: x[5])
+
+        for row in self.incomplete_tree.get_children():
+            self.incomplete_tree.delete(row)
+        for row in self.complete_tree.get_children():
+            self.complete_tree.delete(row)
+
+        for task in tasks:
+            if task[5] == "未完成":
+                self.incomplete_tree.insert("", "end", values=task)
+            else:
+                self.complete_tree.insert("", "end", values=task)
+
+    def check_reminders(self):
+        """检查任务截止日期，并在接近截止日期时改变字体颜色"""
+        for row in self.incomplete_tree.get_children():
+            task = self.incomplete_tree.item(row, "values")
+            due_date = datetime.strptime(task[3], "%Y-%m-%d")
+            if due_date - datetime.now() <= timedelta(days=3):
+                self.incomplete_tree.tag_configure("urgent", foreground="red")
+                self.incomplete_tree.item(row, tags=("urgent",))
+
+        # 每隔1分钟检查一次
+        threading.Timer(60, self.check_reminders).start()
+
+    def monitor_memory(self):
+        """监控内存使用情况"""
+        memory_usage = psutil.Process().memory_info().rss / 1024 / 1024  # 单位：MB
+        logging.info(f"当前内存使用：{memory_usage:.2f} MB")
+        # 每隔5分钟检查一次
+        threading.Timer(300, self.monitor_memory).start()
+
+    def on_closing(self):
+        """窗口关闭事件"""
+        logging.info("程序正在退出...")
+        self.root.destroy()
+
+    def clear_inputs(self):
+        """清空输入框"""
+        self.title_entry.delete(0, tk.END)
+        self.description_entry.delete(0, tk.END)
+        self.due_date_entry.delete(0, tk.END)
+        self.priority_combobox.current(0)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ScheduleManagerApp(root)
+    root.mainloop()
