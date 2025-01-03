@@ -1,0 +1,241 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
+from tkinter import ttk
+import json
+import os
+
+class WritingApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("基础写作软件")
+        self.root.geometry("1000x800")
+        self.current_file = None
+        self.dark_mode = False
+        self.data = {
+            "chapters": {},
+            "notes": [],
+            "cards": {},
+            "links": {}
+        }
+
+        # 加载本地数据
+        self.load_data()
+
+        # 创建文本编辑区域
+        self.create_text_area()
+
+        # 创建菜单栏
+        self.create_menu()
+
+        # 创建工具栏
+        self.create_toolbar()
+
+        # 创建侧边栏（用于便签和卡片）
+        self.create_sidebar()
+
+        # 创建状态栏
+        self.create_status_bar()
+
+    def create_text_area(self):
+        self.text_area = tk.Text(self.root, wrap="word", undo=True, font=("Arial", 12))
+        self.text_area.pack(side=tk.LEFT, fill="both", expand=True)
+
+    def create_menu(self):
+        menubar = tk.Menu(self.root)
+
+        # 文件菜单
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="新建", command=self.new_file)
+        file_menu.add_command(label="打开", command=self.open_file)
+        file_menu.add_command(label="保存", command=self.save_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="退出", command=self.root.quit)
+        menubar.add_cascade(label="文件", menu=file_menu)
+
+        # 编辑菜单
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        edit_menu.add_command(label="撤销", command=self.text_area.edit_undo)
+        edit_menu.add_command(label="重做", command=self.text_area.edit_redo)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="查找", command=self.find_text)
+        edit_menu.add_command(label="替换", command=self.replace_text)
+        menubar.add_cascade(label="编辑", menu=edit_menu)
+
+        # 视图菜单
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_command(label="夜间模式", command=self.toggle_dark_mode)
+        menubar.add_cascade(label="视图", menu=view_menu)
+
+        # 章节菜单
+        chapter_menu = tk.Menu(menubar, tearoff=0)
+        chapter_menu.add_command(label="添加章节", command=self.add_chapter)
+        chapter_menu.add_command(label="跳转到章节", command=self.jump_to_chapter)
+        menubar.add_cascade(label="章节", menu=chapter_menu)
+
+        self.root.config(menu=menubar)
+
+    def create_toolbar(self):
+        toolbar = ttk.Frame(self.root)
+        toolbar.pack(side=tk.TOP, fill=tk.X)
+
+        # 新建按钮
+        new_button = ttk.Button(toolbar, text="新建", command=self.new_file)
+        new_button.pack(side=tk.LEFT, padx=2, pady=2)
+
+        # 打开按钮
+        open_button = ttk.Button(toolbar, text="打开", command=self.open_file)
+        open_button.pack(side=tk.LEFT, padx=2, pady=2)
+
+        # 保存按钮
+        save_button = ttk.Button(toolbar, text="保存", command=self.save_file)
+        save_button.pack(side=tk.LEFT, padx=2, pady=2)
+
+    def create_sidebar(self):
+        sidebar = ttk.Frame(self.root, width=200)
+        sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 便签功能
+        ttk.Label(sidebar, text="便签").pack()
+        self.note_entry = tk.Text(sidebar, height=5, width=20)
+        self.note_entry.pack()
+        ttk.Button(sidebar, text="添加便签", command=self.add_note).pack()
+
+        # 人物/场景卡片
+        ttk.Label(sidebar, text="人物/场景卡片").pack()
+        self.card_name_entry = ttk.Entry(sidebar)
+        self.card_name_entry.pack()
+        self.card_content_entry = tk.Text(sidebar, height=5, width=20)
+        self.card_content_entry.pack()
+        ttk.Button(sidebar, text="添加卡片", command=self.add_card).pack()
+
+    def create_status_bar(self):
+        self.status_bar = tk.Label(self.root, text="字数: 0", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # 绑定字数统计
+        self.text_area.bind("<KeyRelease>", self.update_word_count)
+
+    def add_note(self):
+        note = self.note_entry.get("1.0", tk.END).strip()
+        if note:
+            self.data["notes"].append(note)
+            self.note_entry.delete("1.0", tk.END)
+            messagebox.showinfo("提示", "便签已添加！")
+
+    def add_card(self):
+        name = self.card_name_entry.get().strip()
+        content = self.card_content_entry.get("1.0", tk.END).strip()
+        if name and content:
+            self.data["cards"][name] = content
+            self.card_name_entry.delete(0, tk.END)
+            self.card_content_entry.delete("1.0", tk.END)
+            messagebox.showinfo("提示", "卡片已添加！")
+
+    def add_chapter(self):
+        chapter_name = simpledialog.askstring("添加章节", "请输入章节名称:")
+        if chapter_name:
+            self.data["chapters"][chapter_name] = self.text_area.get("1.0", tk.END)
+            messagebox.showinfo("提示", f"章节 '{chapter_name}' 已添加！")
+
+    def jump_to_chapter(self):
+        chapter_name = simpledialog.askstring("跳转到章节", "请输入章节名称:")
+        if chapter_name and chapter_name in self.data["chapters"]:
+            self.text_area.delete("1.0", tk.END)
+            self.text_area.insert(tk.END, self.data["chapters"][chapter_name])
+        else:
+            messagebox.showwarning("警告", "章节不存在！")
+
+    def find_text(self):
+        find_window = tk.Toplevel(self.root)
+        find_window.title("查找")
+        tk.Label(find_window, text="查找内容:").pack()
+        self.find_entry = ttk.Entry(find_window)
+        self.find_entry.pack()
+        ttk.Button(find_window, text="查找", command=self.search).pack()
+
+    def search(self):
+        keyword = self.find_entry.get().strip()
+        if keyword:
+            start = self.text_area.search(keyword, "1.0", tk.END)
+            if start:
+                end = f"{start}+{len(keyword)}c"
+                self.text_area.tag_remove("highlight", "1.0", tk.END)
+                self.text_area.tag_add("highlight", start, end)
+                self.text_area.tag_config("highlight", background="yellow")
+                self.text_area.mark_set(tk.INSERT, start)
+                self.text_area.see(start)
+
+    def replace_text(self):
+        replace_window = tk.Toplevel(self.root)
+        replace_window.title("替换")
+        tk.Label(replace_window, text="查找内容:").pack()
+        self.find_replace_entry = ttk.Entry(replace_window)
+        self.find_replace_entry.pack()
+        tk.Label(replace_window, text="替换为:").pack()
+        self.replace_entry = ttk.Entry(replace_window)
+        self.replace_entry.pack()
+        ttk.Button(replace_window, text="替换", command=self.replace).pack()
+
+    def replace(self):
+        find = self.find_replace_entry.get().strip()
+        replace = self.replace_entry.get().strip()
+        if find:
+            content = self.text_area.get("1.0", tk.END)
+            new_content = content.replace(find, replace)
+            self.text_area.delete("1.0", tk.END)
+            self.text_area.insert(tk.END, new_content)
+
+    def update_word_count(self, event=None):
+        content = self.text_area.get(1.0, tk.END)
+        words = len(content.split())
+        self.status_bar.config(text=f"字数: {words}")
+
+    def save_data(self):
+        with open("writing_data.json", "w", encoding="utf-8") as file:
+            json.dump(self.data, file, ensure_ascii=False, indent=4)
+
+    def load_data(self):
+        if os.path.exists("writing_data.json"):
+            with open("writing_data.json", "r", encoding="utf-8") as file:
+                self.data = json.load(file)
+
+    def new_file(self):
+        self.text_area.delete(1.0, tk.END)
+        self.current_file = None
+
+    def open_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
+        if file_path:
+            self.current_file = file_path
+            with open(file_path, "r", encoding="utf-8") as file:
+                content = file.read()
+                self.text_area.delete(1.0, tk.END)
+                self.text_area.insert(tk.END, content)
+            self.update_word_count()
+
+    def save_file(self):
+        if self.current_file:
+            with open(self.current_file, "w", encoding="utf-8") as file:
+                file.write(self.text_area.get(1.0, tk.END))
+        else:
+            self.save_as_file()
+        self.save_data()
+
+    def save_as_file(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
+        if file_path:
+            self.current_file = file_path
+            with open(file_path, "w", encoding="utf-8") as file:
+                file.write(self.text_area.get(1.0, tk.END))
+        self.save_data()
+
+    def toggle_dark_mode(self):
+        self.dark_mode = not self.dark_mode
+        bg_color = "#2E2E2E" if self.dark_mode else "white"
+        fg_color = "white" if self.dark_mode else "black"
+        self.text_area.config(bg=bg_color, fg=fg_color)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = WritingApp(root)
+    root.mainloop()
